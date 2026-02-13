@@ -2,7 +2,9 @@ import axios from "axios";
 import { getSession, resetSession } from "./state.js";
 
 const GRAPH = "https://graph.facebook.com/v24.0";
-const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL; // ponla en Render env vars
+const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
+
+/* ================= WEBHOOK VERIFY ================= */
 export function handleWebhookVerification(req, res) {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -14,11 +16,11 @@ export function handleWebhookVerification(req, res) {
   return res.sendStatus(403);
 }
 
+/* ================= INCOMING ================= */
 export async function handleIncomingMessage(body) {
   const entry = body?.entry?.[0];
   const changes = entry?.changes?.[0];
   const value = changes?.value;
-
   const msg = value?.messages?.[0];
   if (!msg) return;
 
@@ -26,199 +28,151 @@ export async function handleIncomingMessage(body) {
   const text = (msg?.text?.body || "").trim();
   const t = text.toLowerCase();
 
-  // Comandos globales
-  if (t === "menu" || t === "menú" || t === "hola") {
+  // comandos globales
+  if (t === "hola" || t === "menu" || t === "menú") {
     resetSession(from);
     return sendText(
       from,
       `¡Hola! 👋 Soy Clinic Bot.\n\n` +
-        `Escribe:\n` +
-        `1️⃣ Cita\n` +
-        `2️⃣ Precios\n` +
-        `3️⃣ Horario\n` +
-        `4️⃣ Humano`
+      `1️⃣ Pedir cita\n` +
+      `2️⃣ Precios\n` +
+      `3️⃣ Horario`
     );
   }
 
-  if (t === "cancelar" || t === "reiniciar") {
+  if (t === "cancelar") {
     resetSession(from);
-    return sendText(from, `Listo ✅ He cancelado el proceso. Escribe *hola* para empezar.`);
+    return sendText(from, `Proceso cancelado ❌ Escribe *hola* para empezar.`);
   }
 
   const s = getSession(from);
 
-  // Si está en proceso de reserva, seguimos el wizard
   if (s.step !== "IDLE") {
     return handleBookingFlow({ from, text, t, s });
   }
 
-  // Menú
-  if (t === "1" || t.includes("cita") || t.includes("reserv")) {
+  if (t === "1" || t.includes("cita")) {
     s.step = "ASK_SPECIALTY";
     s.data = {};
-    return sendText(from, `Perfecto 📅 ¿Para qué especialidad? (Ej: dental, fisio, estética)`);
+    return sendText(from, `¿Para qué especialidad? (ej: dental, fisio)`);
   }
 
-  if (t === "2" || t.includes("precio")) {
-    return sendText(from, `💶 Precios orientativos:\n- Consulta: 30€\n- Revisión: 20€\n\nEscribe *hola* para menú.`);
+  if (t === "2") {
+    return sendText(from, `💶 Precios orientativos:\nConsulta 30€\nRevisión 20€`);
   }
 
-  if (t === "3" || t.includes("horario")) {
-    return sendText(from, `🕒 Horario:\nL–V 9:00–14:00 y 16:00–20:00\nS 10:00–13:00\n\nEscribe *hola* para menú.`);
+  if (t === "3") {
+    return sendText(from, `🕒 Horario:\nL–V 9–14 y 16–20\nS 10–13`);
   }
 
-  if (t === "4" || t.includes("humano") || t.includes("persona") || t.includes("recepcion")) {
-    return sendText(from, `De acuerdo 👩‍💼 Te pasa recepción en breve. Si quieres, escribe *1* para pedir cita.`);
-  }
-
-  return sendText(from, `No te he entendido 😅 Escribe *hola* para ver el menú.`);
+  return sendText(from, `No te he entendido 😅 Escribe *hola*`);
 }
 
+/* ================= BOOKING FLOW (MODO B) ================= */
 async function handleBookingFlow({ from, text, t, s }) {
-  // Paso 1: especialidad
+
+  // 1️⃣ Especialidad
   if (s.step === "ASK_SPECIALTY") {
     s.data.specialty = text;
     s.step = "ASK_DAY";
-    return sendText(from, `Genial ✅ ¿Qué día te viene bien? (Ej: lunes / 12-03 / mañana)`);
+    return sendText(from, `Perfecto ✅ ¿Qué día te viene bien? (lunes / mañana / 12-03)`);
   }
 
-  // Paso 2: día -> pedir sugerencias a Calendar
+  // 2️⃣ Día → pedir huecos al Calendar
   if (s.step === "ASK_DAY") {
     s.data.dayText = text;
 
-    // llamar Apps Script para sugerir 3 huecos
-    const r = await axios.post(APPS_SCRIPT_URL, {
-      action: "suggest",
-      phone: from,
-      specialty: s.data.specialty,
-      dayText: s.data.dayText
-    });
-
-    if (!r.data?.ok) {
-      return sendText(from, `No pude sacar huecos 😕 (${r.data?.error || "error"})\nPrueba con otro día (ej: lunes o 12/03).`);
+    let r;
+    try {
+      r = await axios.post(APPS_SCRIPT_URL, {
+        action: "suggest",
+        phone: from,
+        specialty: s.data.specialty,
+        dayText: s.data.dayText
+      });
+    } catch (e) {
+      return sendText(from, `Error consultando agenda 😕 Prueba otro día.`);
     }
 
-    const slots = r.data.slots || [];
-    if (slots.length === 0) {
-      return sendText(from, `No hay huecos libres ese día 😕\nPrueba con otro día (ej: martes o mañana).`);
+    if (!r.data?.ok || r.data.slots.length === 0) {
+      return sendText(from, `No hay huecos ese día 😕 Dime otro.`);
     }
 
-    // guardamos slots en sesión
-    s.data.slots = slots;
+    s.data.slots = r.data.slots;
     s.step = "ASK_SLOT";
 
-    let msg = `Perfecto. Huecos disponibles:\n`;
-    slots.forEach((x, i) => {
+    let msg = "Huecos disponibles:\n";
+    r.data.slots.forEach((x, i) => {
       msg += `${i + 1}️⃣ ${x.label}\n`;
     });
-    msg += `\nResponde 1, 2 o 3 (o escribe *otro día*).`;
+    msg += `\nResponde 1, 2 o 3`;
 
     return sendText(from, msg);
   }
 
-  // Paso 3: elegir slot
+  // 3️⃣ Elegir hueco
   if (s.step === "ASK_SLOT") {
-    if (t.includes("otro")) {
-      s.step = "ASK_DAY";
-      return sendText(from, `Vale 🙂 dime otro día (ej: miércoles / 15-03 / mañana).`);
-    }
-
     const idx = Number(t) - 1;
-    const slots = s.data.slots || [];
-    if (Number.isNaN(idx) || idx < 0 || idx >= slots.length) {
-      return sendText(from, `Elige 1, 2 o 3. (o escribe *otro día*)`);
+    if (isNaN(idx) || !s.data.slots[idx]) {
+      return sendText(from, `Elige 1, 2 o 3`);
     }
 
-    s.data.slot = slots[idx]; // {startISO,endISO,label}
+    s.data.slot = s.data.slots[idx];
     s.step = "ASK_NAME";
-    return sendText(from, `Genial ✅ Para reservar ${s.data.slot.label}, dime tu nombre y apellido.`);
+    return sendText(from, `Genial 👍 dime tu nombre y apellido`);
   }
 
-  // Paso 4: nombre
+  // 4️⃣ Nombre
   if (s.step === "ASK_NAME") {
     s.data.name = text;
     s.step = "CONFIRM";
     return sendText(
       from,
       `Confirma tu cita:\n` +
-        `• Especialidad: *${s.data.specialty}*\n` +
-        `• Día/hora: *${s.data.slot?.label}*\n` +
-        `• Nombre: *${s.data.name}*\n\n` +
-        `Responde *SI* para confirmar o *NO* para cancelar.`
+      `🩺 ${s.data.specialty}\n` +
+      `📅 ${s.data.slot.label}\n` +
+      `👤 ${s.data.name}\n\n` +
+      `Responde *SI* para confirmar`
     );
   }
 
-  // Paso 5: confirmar -> reservar en Calendar + Sheets
-   // Paso 5: confirmar
+  // 5️⃣ Confirmar → Calendar + Sheets + Email
   if (s.step === "CONFIRM") {
-    if (t === "si" || t === "sí" || t === "ok" || t === "confirmo") {
-
-      // 1️⃣ Guardar en Google Sheets
-      try {
-        await axios.post(process.env.SHEET_WEBHOOK_URL, {
-          telefono: from,
-          nombre: s.data.name,
-          especialidad: s.data.specialty,
-          dia: s.data.day,
-          hora: s.data.time,
-          estado: "pendiente",
-        });
-      } catch (err) {
-        console.log("Error guardando en Sheets:", err?.response?.data || err.message);
-      }
-
-      // 2️⃣ Respuesta automática al paciente
-      await sendText(
-        from,
-        `✅ ¡Perfecto! Hemos recibido tu solicitud.\n\n` +
-          `📌 Resumen:\n` +
-          `• Especialidad: *${s.data.specialty}*\n` +
-          `• Día: *${s.data.day}*\n` +
-          `• Hora: *${s.data.time}*\n\n` +
-          `📲 Recepción la confirmará en breve.\n` +
-          `Escribe *hola* para volver al menú.`
-      );
-
+    if (t !== "si" && t !== "sí") {
       resetSession(from);
-      return;
+      return sendText(from, `Cancelado ❌ Escribe *hola*`);
+    }
+
+    let r;
+    try {
+      r = await axios.post(APPS_SCRIPT_URL, {
+        action: "book",
+        phone: from,
+        name: s.data.name,
+        specialty: s.data.specialty,
+        dayText: s.data.dayText,
+        slotStartISO: s.data.slot.startISO
+      });
+    } catch (e) {
+      resetSession(from);
+      return sendText(from, `Error reservando 😕 Intenta otra vez.`);
     }
 
     resetSession(from);
-    return sendText(from, `Entendido ✅ Cita cancelada. Escribe *hola* para empezar.`);
-  }
-
-  // Fallback
-  resetSession(from);
-  return sendText(from, `He reiniciado el proceso. Escribe *1* para pedir cita.`);
-}
-
-
-
-    // 2️⃣ Respuesta automática al paciente
-    await sendText(
+    return sendText(
       from,
-      `✅ ¡Perfecto! Hemos recibido tu solicitud.\n\n` +
-      `📌 Resumen:\n` +
-      `• Especialidad: *${s.data.specialty}*\n` +
-      `• Día: *${s.data.day}*\n` +
-      `• Hora: *${s.data.time}*\n\n` +
-      `📲 Recepción la confirmará en breve.\n` +
-      `Escribe *hola* para volver al menú.`
+      `✅ Cita confirmada\n` +
+      `📅 ${r.data.label}\n` +
+      `👤 ${s.data.name}\n\n` +
+      `¡Te esperamos!`
     );
-    resetSession(from);
-    return;
   }
 
   resetSession(from);
-  return sendText(from, `Entendido ✅ Cita cancelada. Escribe *hola* para empezar.`);
+  return sendText(from, `Proceso reiniciado. Escribe *hola*`);
 }
 
-
-  // Fallback
-  resetSession(from);
-  return sendText(from, `He reiniciado el proceso. Escribe *1* para pedir cita.`);
-}
-
+/* ================= SEND TEXT ================= */
 async function sendText(to, text) {
   const url = `${GRAPH}/${process.env.WA_PHONE_NUMBER_ID}/messages`;
 
@@ -227,13 +181,13 @@ async function sendText(to, text) {
     {
       messaging_product: "whatsapp",
       to,
-      text: { body: text },
+      text: { body: text }
     },
     {
       headers: {
         Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
-      },
+        "Content-Type": "application/json"
+      }
     }
   );
 }
