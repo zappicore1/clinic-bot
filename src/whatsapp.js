@@ -22,11 +22,51 @@ export async function handleIncomingMessage(body) {
   if (!msg) return;
 
   const from = msg.from;
-  const text = msg?.text?.body?.trim() || "";
+  const text = (msg?.text?.body || "").trim();
+  const t = text.toLowerCase();
 
-  // Respuesta simple para probar que funciona
-  await sendText(from, `✅ Bot activo. Recibí: "${text}"`);
+  if (t === "hola" || t === "buenas") {
+    return sendText(
+      from,
+      `¡Hola! 👋 Soy Clinic Bot.\n\n` +
+      `Escribe:\n` +
+      `1️⃣ Cita\n` +
+      `2️⃣ Precios\n` +
+      `3️⃣ Horario`
+    );
+  }
+
+  if (t === "1" || t.includes("cita")) {
+    return sendText(
+      from,
+      `📅 Para pedir cita dime:\n` +
+      `Especialidad + día + hora\n\n` +
+      `Ejemplo: "Dental lunes tarde"`
+    );
+  }
+
+  if (t === "2" || t.includes("precio")) {
+    return sendText(
+      from,
+      `💶 Precios:\n` +
+      `Consulta: 30€\nRevisión: 20€`
+    );
+  }
+
+  if (t === "3" || t.includes("horario")) {
+    return sendText(
+      from,
+      `🕒 Horario:\n` +
+      `L–V 9–14 / 16–20`
+    );
+  }
+
+  return sendText(
+    from,
+    `No te he entendido 😅\nEscribe *hola* para empezar.`
+  );
 }
+
 
 async function sendText(to, text) {
   const url = `${GRAPH}/${process.env.WA_PHONE_NUMBER_ID}/messages`;
