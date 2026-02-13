@@ -111,38 +111,46 @@ async function handleBookingFlow({ from, text, t, s }) {
     );
   }
 
-  // Paso 5: confirmar
-  if (s.step === "CONFIRM") {
-    if (t === "si" || t === "sí" || t === "ok" || t === "confirmo") {
-      // ✅ Guardar en Google Sheets (si hay URL configurada)
-      try {
-        if (!process.env.GSHEET_WEBHOOK_URL) {
-          console.log("GSHEET_WEBHOOK_URL no está configurada.");
-        } else {
-          await axios.post(process.env.GSHEET_WEBHOOK_URL, {
-            telefono: from,
-            nombre: s.data.name,
-            especialidad: s.data.specialty,
-            dia: s.data.day,
-            hora: s.data.time,
-          });
-        }
-      } catch (err) {
-        console.error("Error guardando en Google Sheets:", err?.response?.data || err.message);
-      }
 
-      resetSession(from);
-      return sendText(
-        from,
-        `¡Listo! ✅ He registrado tu solicitud.\n` +
-          `Recepción la confirmará en breve.\n\n` +
-          `Escribe *hola* para volver al menú.`
-      );
+// Paso 5: confirmar
+if (s.step === "CONFIRM") {
+
+  if (t === "si" || t === "sí" || t === "ok" || t === "confirmo") {
+
+    // 1️⃣ Guardar en Google Sheets
+    try {
+      await axios.post(process.env.SHEET_WEBHOOK_URL, {
+        telefono: from,
+        nombre: s.data.name,
+        especialidad: s.data.specialty,
+        dia: s.data.day,
+        hora: s.data.time,
+        estado: "pendiente",
+      });
+    } catch (err) {
+      console.log("Error guardando en Sheets:", err?.message);
     }
 
+    // 2️⃣ Respuesta automática al paciente
+    await sendText(
+      from,
+      `✅ ¡Perfecto! Hemos recibido tu solicitud.\n\n` +
+      `📌 Resumen:\n` +
+      `• Especialidad: *${s.data.specialty}*\n` +
+      `• Día: *${s.data.day}*\n` +
+      `• Hora: *${s.data.time}*\n\n` +
+      `📲 Recepción la confirmará en breve.\n` +
+      `Escribe *hola* para volver al menú.`
+    );
+
     resetSession(from);
-    return sendText(from, `Entendido ✅ Cancelado. Escribe *hola* para empezar de nuevo.`);
+    return;
   }
+
+  resetSession(from);
+  return sendText(from, `Entendido ✅ Cita cancelada. Escribe *hola* para empezar.`);
+}
+
 
   // Fallback
   resetSession(from);
