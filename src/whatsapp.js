@@ -78,49 +78,66 @@ async function handleBookingFlow({ from, text, t, s }) {
     return sendText(from, `Perfecto ✅ ¿Qué día te viene bien? (lunes / mañana / 12-03)`);
   }
 
-  // 2️⃣ Día → pedir huecos al Calendar
-  if (s.step === "ASK_DAY") {
-    s.data.dayText = text;
+ // Paso 2: día -> pedir sugerencias a Calendar
+if (s.step === "ASK_DAY") {
+  s.data.dayText = text;
 
-    let r;
-    try {
-      r = await axios.post(APPS_SCRIPT_URL, {
-        action: "suggest",
-        phone: from,
-        specialty: s.data.specialty,
-        dayText: s.data.dayText
-      });
-    } catch (e) {
-      return sendText(from, `Error consultando agenda 😕 Prueba otro día.`);
-    }
+  const r = await axios.post(APPS_SCRIPT_URL, {
+    action: "suggest",
+    phone: from,
+    specialty: s.data.specialty,
+    dayText: s.data.dayText
+  });
 
-    if (!r.data?.ok || r.data.slots.length === 0) {
-      return sendText(from, `No hay huecos ese día 😕 Dime otro.`);
-    }
-
-    s.data.slots = r.data.slots;
-    s.step = "ASK_SLOT";
-
-    let msg = "Huecos disponibles:\n";
-    r.data.slots.forEach((x, i) => {
-      msg += `${i + 1}️⃣ ${x.label}\n`;
-    });
-    msg += `\nResponde 1, 2 o 3`;
-
-    return sendText(from, msg);
+  if (!r?.data?.ok) {
+    return sendText(
+      from,
+      `No pude sacar huecos 😕 (${r?.data?.error || "error"})\nPrueba con otro día (ej: lunes o 12/03).`
+    );
   }
 
-  // 3️⃣ Elegir hueco
-  if (s.step === "ASK_SLOT") {
-    const idx = Number(t) - 1;
-    if (isNaN(idx) || !s.data.slots[idx]) {
-      return sendText(from, `Elige 1, 2 o 3`);
-    }
+  // ✅ SIEMPRE array, aunque venga undefined
+  const slots = Array.isArray(r.data.slots) ? r.data.slots : [];
 
-    s.data.slot = s.data.slots[idx];
-    s.step = "ASK_NAME";
-    return sendText(from, `Genial 👍 dime tu nombre y apellido`);
+  if (slots.length === 0) {
+    return sendText(from, `No hay huecos libres ese día 😕\nPrueba con otro día (ej: martes o mañana).`);
   }
+
+  s.data.slots = slots;
+  s.step = "ASK_SLOT";
+
+  let msg = `Perfecto. Huecos disponibles:\n`;
+  slots.forEach((x, i) => {
+    msg += `${i + 1}️⃣ ${x.label}\n`;
+  });
+  msg += `\nResponde 1, 2 o 3 (o escribe *otro día*).`;
+
+  return sendText(from, msg);
+}
+
+// Paso 3: elegir slot
+if (s.step === "ASK_SLOT") {
+  if (t.includes("otro")) {
+    s.step = "ASK_DAY";
+    return sendText(from, `Vale 🙂 dime otro día (ej: miércoles / 15-03 / mañana).`);
+  }
+
+  const slots = Array.isArray(s.data?.slots) ? s.data.slots : [];
+
+  if (slots.length === 0) {
+    s.step = "ASK_DAY";
+    return sendText(from, `Se perdió la lista de huecos 😅 Dime otra vez el día (ej: lunes / 12-03).`);
+  }
+
+  const idx = Number(t) - 1;
+  if (Number.isNaN(idx) || idx < 0 || idx >= slots.length) {
+    return sendText(from, `Elige 1, 2 o 3. (o escribe *otro día*)`);
+  }
+
+  s.data.slot = slots[idx];
+  s.step = "ASK_NAME";
+  return sendText(from, `Genial ✅ Para reservar ${s.data.slot.label}, dime tu nombre y apellido.`);
+}
 
   // 4️⃣ Nombre
   if (s.step === "ASK_NAME") {
