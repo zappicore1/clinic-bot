@@ -46,6 +46,8 @@ export async function handleIncomingMessage(body) {
   }
 
   const s = getSession(from);
+  console.log("DEBUG", { from, text, step: s.step, data: s.data });
+
 
   // Si está en proceso de reserva, seguimos el wizard
   if (s.step !== "IDLE") {
