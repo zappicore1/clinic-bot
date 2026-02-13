@@ -114,6 +114,23 @@ async function handleBookingFlow({ from, text, t, s }) {
   // Paso 5: confirmar
   if (s.step === "CONFIRM") {
     if (t === "si" || t === "sí" || t === "ok" || t === "confirmo") {
+      // ✅ Guardar en Google Sheets (si hay URL configurada)
+      try {
+        if (!process.env.GSHEET_WEBHOOK_URL) {
+          console.log("GSHEET_WEBHOOK_URL no está configurada.");
+        } else {
+          await axios.post(process.env.GSHEET_WEBHOOK_URL, {
+            telefono: from,
+            nombre: s.data.name,
+            especialidad: s.data.specialty,
+            dia: s.data.day,
+            hora: s.data.time,
+          });
+        }
+      } catch (err) {
+        console.error("Error guardando en Google Sheets:", err?.response?.data || err.message);
+      }
+
       resetSession(from);
       return sendText(
         from,
