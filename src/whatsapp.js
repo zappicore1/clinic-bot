@@ -2,7 +2,7 @@ import axios from "axios";
 import { getSession, resetSession } from "./state.js";
 
 const GRAPH = "https://graph.facebook.com/v24.0";
-
+const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL; // ponla en Render env vars
 export function handleWebhookVerification(req, res) {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -82,18 +82,56 @@ async function handleBookingFlow({ from, text, t, s }) {
     return sendText(from, `Genial ✅ ¿Qué día te viene bien? (Ej: lunes / 12-03 / mañana)`);
   }
 
-  // Paso 2: día
+  // Paso 2: día -> pedir sugerencias a Calendar
   if (s.step === "ASK_DAY") {
-    s.data.day = text;
-    s.step = "ASK_TIME";
-    return sendText(from, `Perfecto. ¿Prefieres *mañana* o *tarde*? (o una hora, ej: 17:30)`);
+    s.data.dayText = text;
+
+    // llamar Apps Script para sugerir 3 huecos
+    const r = await axios.post(APPS_SCRIPT_URL, {
+      action: "suggest",
+      phone: from,
+      specialty: s.data.specialty,
+      dayText: s.data.dayText
+    });
+
+    if (!r.data?.ok) {
+      return sendText(from, `No pude sacar huecos 😕 (${r.data?.error || "error"})\nPrueba con otro día (ej: lunes o 12/03).`);
+    }
+
+    const slots = r.data.slots || [];
+    if (slots.length === 0) {
+      return sendText(from, `No hay huecos libres ese día 😕\nPrueba con otro día (ej: martes o mañana).`);
+    }
+
+    // guardamos slots en sesión
+    s.data.slots = slots;
+    s.step = "ASK_SLOT";
+
+    let msg = `Perfecto. Huecos disponibles:\n`;
+    slots.forEach((x, i) => {
+      msg += `${i + 1}️⃣ ${x.label}\n`;
+    });
+    msg += `\nResponde 1, 2 o 3 (o escribe *otro día*).`;
+
+    return sendText(from, msg);
   }
 
-  // Paso 3: hora/franja
-  if (s.step === "ASK_TIME") {
-    s.data.time = text;
+  // Paso 3: elegir slot
+  if (s.step === "ASK_SLOT") {
+    if (t.includes("otro")) {
+      s.step = "ASK_DAY";
+      return sendText(from, `Vale 🙂 dime otro día (ej: miércoles / 15-03 / mañana).`);
+    }
+
+    const idx = Number(t) - 1;
+    const slots = s.data.slots || [];
+    if (Number.isNaN(idx) || idx < 0 || idx >= slots.length) {
+      return sendText(from, `Elige 1, 2 o 3. (o escribe *otro día*)`);
+    }
+
+    s.data.slot = slots[idx]; // {startISO,endISO,label}
     s.step = "ASK_NAME";
-    return sendText(from, `Último paso 🙂 ¿Cómo te llamas? (nombre y apellido)`);
+    return sendText(from, `Genial ✅ Para reservar ${s.data.slot.label}, dime tu nombre y apellido.`);
   }
 
   // Paso 4: nombre
@@ -104,32 +142,50 @@ async function handleBookingFlow({ from, text, t, s }) {
       from,
       `Confirma tu cita:\n` +
         `• Especialidad: *${s.data.specialty}*\n` +
-        `• Día: *${s.data.day}*\n` +
-        `• Hora: *${s.data.time}*\n` +
+        `• Día/hora: *${s.data.slot?.label}*\n` +
         `• Nombre: *${s.data.name}*\n\n` +
         `Responde *SI* para confirmar o *NO* para cancelar.`
     );
   }
 
+  // Paso 5: confirmar -> reservar en Calendar + Sheets
+  if (s.step === "CONFIRM") {
+    if (t === "si" || t === "sí" || t === "ok" || t.includes("confirm")) {
+      const payload = {
+        action: "book",
+        phone: from,
+        name: s.data.name,
+        specialty: s.data.specialty,
+        dayText: s.data.dayText,
+        slotStartISO: s.data.slot?.startISO
+      };
 
-// Paso 5: confirmar
-if (s.step === "CONFIRM") {
+      const r = await axios.post(APPS_SCRIPT_URL, payload);
 
-  if (t === "si" || t === "sí" || t === "ok" || t === "confirmo") {
+      if (!r.data?.ok) {
+        // si se ocupó el hueco entre medias, forzamos a elegir otro
+        s.step = "ASK_DAY";
+        return sendText(from, `Uy 😅 ${r.data?.error || "No pude reservar"}\nDime otro día para proponerte huecos.`);
+      }
 
-    // 1️⃣ Guardar en Google Sheets
-    try {
-      await axios.post(process.env.SHEET_WEBHOOK_URL, {
-        telefono: from,
-        nombre: s.data.name,
-        especialidad: s.data.specialty,
-        dia: s.data.day,
-        hora: s.data.time,
-        estado: "pendiente",
-      });
-    } catch (err) {
-      console.log("Error guardando en Sheets:", err?.message);
+      resetSession(from);
+      return sendText(
+        from,
+        `✅ Cita confirmada\n` +
+        `📅 ${r.data.label}\n` +
+        `👤 ${payload.name}\n\n` +
+        `Escribe *hola* para volver al menú.`
+      );
     }
+
+    resetSession(from);
+    return sendText(from, `Entendido ✅ Cancelado. Escribe *hola* para empezar de nuevo.`);
+  }
+
+  resetSession(from);
+  return sendText(from, `He reiniciado el proceso. Escribe *hola* para empezar.`);
+}
+
 
     // 2️⃣ Respuesta automática al paciente
     await sendText(
