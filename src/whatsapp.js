@@ -142,6 +142,9 @@ if (s.step === "CONFIRM") {
       `📲 Recepción la confirmará en breve.\n` +
       `Escribe *hola* para volver al menú.`
     );
+  if (!process.env.SHEET_WEBHOOK_URL?.startsWith("https://")) {
+  console.log("URL de Sheets mal configurada:", process.env.SHEET_WEBHOOK_URL);
+  }
 
     resetSession(from);
     return;
