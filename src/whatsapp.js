@@ -149,42 +149,49 @@ async function handleBookingFlow({ from, text, t, s }) {
   }
 
   // Paso 5: confirmar -> reservar en Calendar + Sheets
+   // Paso 5: confirmar
   if (s.step === "CONFIRM") {
-    if (t === "si" || t === "sí" || t === "ok" || t.includes("confirm")) {
-      const payload = {
-        action: "book",
-        phone: from,
-        name: s.data.name,
-        specialty: s.data.specialty,
-        dayText: s.data.dayText,
-        slotStartISO: s.data.slot?.startISO
-      };
+    if (t === "si" || t === "sí" || t === "ok" || t === "confirmo") {
 
-      const r = await axios.post(APPS_SCRIPT_URL, payload);
-
-      if (!r.data?.ok) {
-        // si se ocupó el hueco entre medias, forzamos a elegir otro
-        s.step = "ASK_DAY";
-        return sendText(from, `Uy 😅 ${r.data?.error || "No pude reservar"}\nDime otro día para proponerte huecos.`);
+      // 1️⃣ Guardar en Google Sheets
+      try {
+        await axios.post(process.env.SHEET_WEBHOOK_URL, {
+          telefono: from,
+          nombre: s.data.name,
+          especialidad: s.data.specialty,
+          dia: s.data.day,
+          hora: s.data.time,
+          estado: "pendiente",
+        });
+      } catch (err) {
+        console.log("Error guardando en Sheets:", err?.response?.data || err.message);
       }
 
-      resetSession(from);
-      return sendText(
+      // 2️⃣ Respuesta automática al paciente
+      await sendText(
         from,
-        `✅ Cita confirmada\n` +
-        `📅 ${r.data.label}\n` +
-        `👤 ${payload.name}\n\n` +
-        `Escribe *hola* para volver al menú.`
+        `✅ ¡Perfecto! Hemos recibido tu solicitud.\n\n` +
+          `📌 Resumen:\n` +
+          `• Especialidad: *${s.data.specialty}*\n` +
+          `• Día: *${s.data.day}*\n` +
+          `• Hora: *${s.data.time}*\n\n` +
+          `📲 Recepción la confirmará en breve.\n` +
+          `Escribe *hola* para volver al menú.`
       );
+
+      resetSession(from);
+      return;
     }
 
     resetSession(from);
-    return sendText(from, `Entendido ✅ Cancelado. Escribe *hola* para empezar de nuevo.`);
+    return sendText(from, `Entendido ✅ Cita cancelada. Escribe *hola* para empezar.`);
   }
 
+  // Fallback
   resetSession(from);
-  return sendText(from, `He reiniciado el proceso. Escribe *hola* para empezar.`);
+  return sendText(from, `He reiniciado el proceso. Escribe *1* para pedir cita.`);
 }
+
 
 
     // 2️⃣ Respuesta automática al paciente
