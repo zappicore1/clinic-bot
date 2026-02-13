@@ -1,7 +1,7 @@
 import axios from "axios";
 import { getSession, resetSession } from "./state.js";
 
-const GRAPH = "https://graph.facebook.com/v19.0";
+const GRAPH = "https://graph.facebook.com/v24.0";
 
 export function handleWebhookVerification(req, res) {
   const mode = req.query["hub.mode"];
@@ -46,8 +46,6 @@ export async function handleIncomingMessage(body) {
   }
 
   const s = getSession(from);
-  console.log("DEBUG", { from, text, step: s.step, data: s.data });
-
 
   // Si está en proceso de reserva, seguimos el wizard
   if (s.step !== "IDLE") {
@@ -81,14 +79,14 @@ async function handleBookingFlow({ from, text, t, s }) {
   if (s.step === "ASK_SPECIALTY") {
     s.data.specialty = text;
     s.step = "ASK_DAY";
-    return sendText(from, `Genial ✅ ¿Qué día te viene bien? (Ej: lunes / mañana / 12-03)`);
+    return sendText(from, `Genial ✅ ¿Qué día te viene bien? (Ej: lunes / 12-03 / mañana)`);
   }
 
   // Paso 2: día
   if (s.step === "ASK_DAY") {
     s.data.day = text;
     s.step = "ASK_TIME";
-    return sendText(from, `Perfecto. ¿Prefieres *mañana* o *tarde*? (o escribe una hora aprox, ej: 17:30)`);
+    return sendText(from, `Perfecto. ¿Prefieres *mañana* o *tarde*? (o una hora, ej: 17:30)`);
   }
 
   // Paso 3: hora/franja
@@ -101,8 +99,6 @@ async function handleBookingFlow({ from, text, t, s }) {
   // Paso 4: nombre
   if (s.step === "ASK_NAME") {
     s.data.name = text;
-
-    // Confirmación
     s.step = "CONFIRM";
     return sendText(
       from,
@@ -118,20 +114,11 @@ async function handleBookingFlow({ from, text, t, s }) {
   // Paso 5: confirmar
   if (s.step === "CONFIRM") {
     if (t === "si" || t === "sí" || t === "ok" || t === "confirmo") {
-      // Aquí todavía no lo metemos en Calendar; lo dejamos como "solicitud"
-      const summary =
-        `✅ Solicitud de cita:\n` +
-        `Nombre: ${s.data.name}\n` +
-        `Especialidad: ${s.data.specialty}\n` +
-        `Día: ${s.data.day}\n` +
-        `Hora: ${s.data.time}`;
-
       resetSession(from);
       return sendText(
         from,
         `¡Listo! ✅ He registrado tu solicitud.\n` +
           `Recepción la confirmará en breve.\n\n` +
-          `Resumen:\n${summary}\n\n` +
           `Escribe *hola* para volver al menú.`
       );
     }
@@ -145,39 +132,6 @@ async function handleBookingFlow({ from, text, t, s }) {
   return sendText(from, `He reiniciado el proceso. Escribe *1* para pedir cita.`);
 }
 
-
-  if (t === "1" || t.includes("cita")) {
-    return sendText(
-      from,
-      `📅 Para pedir cita dime:\n` +
-      `Especialidad + día + hora\n\n` +
-      `Ejemplo: "Dental lunes tarde"`
-    );
-  }
-
-  if (t === "2" || t.includes("precio")) {
-    return sendText(
-      from,
-      `💶 Precios:\n` +
-      `Consulta: 30€\nRevisión: 20€`
-    );
-  }
-
-  if (t === "3" || t.includes("horario")) {
-    return sendText(
-      from,
-      `🕒 Horario:\n` +
-      `L–V 9–14 / 16–20`
-    );
-  }
-
-  return sendText(
-    from,
-    `No te he entendido 😅\nEscribe *hola* para empezar.`
-  );
-}
-
-
 async function sendText(to, text) {
   const url = `${GRAPH}/${process.env.WA_PHONE_NUMBER_ID}/messages`;
 
@@ -186,13 +140,13 @@ async function sendText(to, text) {
     {
       messaging_product: "whatsapp",
       to,
-      text: { body: text }
+      text: { body: text },
     },
     {
       headers: {
         Authorization: `Bearer ${process.env.WA_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
-      }
+        "Content-Type": "application/json",
+      },
     }
   );
 }
