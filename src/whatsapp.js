@@ -3,6 +3,17 @@ import { getSession, resetSession } from "./state.js";
 
 const GRAPH = "https://graph.facebook.com/v24.0";
 const SHEET_WEBHOOK_URL = process.env.SHEET_WEBHOOK_URL;
+//No se q es esta mierda
+export function handleWebhookVerification(req, res) {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === process.env.WA_VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
+  return res.sendStatus(403);
+}
 
 /* ================= INCOMING ================= */
 export async function handleIncomingMessage(body) {
