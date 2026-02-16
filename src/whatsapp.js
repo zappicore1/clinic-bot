@@ -2,7 +2,7 @@ import axios from "axios";
 import { getSession, resetSession } from "./state.js";
 
 const GRAPH = "https://graph.facebook.com/v24.0";
-const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL;
+const SHEET_WEBHOOK_URL = process.env.SHEET_WEBHOOK_URL;
 
 /* ================= WEBHOOK VERIFY ================= */
 export function handleWebhookVerification(req, res) {
@@ -28,39 +28,37 @@ export async function handleIncomingMessage(body) {
   const text = (msg?.text?.body || "").trim();
   const t = text.toLowerCase();
 
-  // Seguridad: si falta APPS_SCRIPT_URL (para sugerencias/reservas)
-  if (!APPS_SCRIPT_URL || !APPS_SCRIPT_URL.startsWith("https://")) {
-    console.log("APPS_SCRIPT_URL mal configurada:", APPS_SCRIPT_URL);
-  }
-
   // comandos globales
   if (t === "hola" || t === "menu" || t === "menú") {
     resetSession(from);
     return sendText(
       from,
       `¡Hola! 👋 Soy Clinic Bot.\n\n` +
+        `Escribe:\n` +
         `1️⃣ Pedir cita\n` +
         `2️⃣ Precios\n` +
         `3️⃣ Horario\n\n` +
-        `Escribe *cancelar* para parar el proceso.`
+        `En cualquier momento: *cancelar*`
     );
   }
 
   if (t === "cancelar" || t === "reiniciar") {
     resetSession(from);
-    return sendText(from, `Proceso cancelado ❌ Escribe *hola* para empezar.`);
+    return sendText(from, `Proceso cancelado ✅ Escribe *hola* para empezar.`);
   }
 
   const s = getSession(from);
 
+  // Si está en proceso de reserva, seguimos el wizard
   if (s.step !== "IDLE") {
     return handleBookingFlow({ from, text, t, s });
   }
 
-  if (t === "1" || t.includes("cita")) {
+  // Menú
+  if (t === "1" || t.includes("cita") || t.includes("reserv")) {
     s.step = "ASK_SPECIALTY";
     s.data = {};
-    return sendText(from, `¿Para qué especialidad? (ej: dental, fisio, estética)`);
+    return sendText(from, `Perfecto 📅 ¿Para qué especialidad? (Ej: dental, fisio, estética)`);
   }
 
   if (t === "2" || t.includes("precio")) {
@@ -68,175 +66,153 @@ export async function handleIncomingMessage(body) {
   }
 
   if (t === "3" || t.includes("horario")) {
-    return sendText(from, `🕒 Horario:\nL–V 9–14 y 16–20\nS 10–13\n\nEscribe *hola* para menú.`);
+    return sendText(from, `🕒 Horario:\nL–V 9:00–14:00 y 16:00–20:00\nS 10:00–13:00\n\nEscribe *hola* para menú.`);
   }
 
-  return sendText(from, `No te he entendido 😅 Escribe *hola*`);
+  return sendText(from, `No te he entendido 😅 Escribe *hola* para ver el menú.`);
 }
 
-/* ================= BOOKING FLOW (MODO B) ================= */
+/* ================= BOOKING FLOW (SOLO SHEETS) ================= */
 async function handleBookingFlow({ from, text, t, s }) {
-  // 1️⃣ Especialidad
+  // Paso 1: especialidad
   if (s.step === "ASK_SPECIALTY") {
     s.data.specialty = text;
-    s.step = "ASK_DAY";
-    return sendText(from, `Perfecto ✅ ¿Qué día te viene bien? (jueves / mañana / 12-03)`);
+    s.data.days = nextBusinessDaysLabels(3); // ["mar 20/02", "mié 21/02", "jue 22/02"]
+    s.step = "ASK_DAY_CHOICE";
+
+    const d = s.data.days;
+    return sendText(
+      from,
+      `Genial ✅ Tengo estos días libres:\n` +
+        `1️⃣ ${d[0]}\n` +
+        `2️⃣ ${d[1]}\n` +
+        `3️⃣ ${d[2]}\n\n` +
+        `Responde 1, 2 o 3. O escribe *otro* si quieres proponer otro día.`
+    );
   }
 
-  // 2️⃣ Día -> pedir sugerencias (Apps Script: action=suggest)
-  if (s.step === "ASK_DAY") {
-    s.data.dayText = text;
-
-    if (!APPS_SCRIPT_URL || !APPS_SCRIPT_URL.startsWith("https://")) {
-      resetSession(from);
-      return sendText(from, `No está configurada la agenda 😕 (APPS_SCRIPT_URL). Escribe *hola*.`);
-    }
-
-    let r;
-    try {
-      r = await axios.post(APPS_SCRIPT_URL, {
-        action: "suggest",
-        phone: from,
-        specialty: s.data.specialty,
-        dayText: s.data.dayText,
-      });
-    } catch (err) {
-      console.log("Error llamando suggest:", err?.response?.data || err.message);
-      return sendText(from, `Error consultando agenda 😕 Prueba con otro día.`);
-    }
-
-    console.log("RESPUESTA APPS SCRIPT (suggest):", JSON.stringify(r?.data));
-
-    if (!r?.data?.ok) {
-      return sendText(
-        from,
-        `No pude sacar huecos 😕 (${r?.data?.error || "error"})\nPrueba con otro día (ej: viernes o mañana).`
-      );
-    }
-
-    const slots = Array.isArray(r.data.slots) ? r.data.slots : [];
-    if (slots.length === 0) {
-      return sendText(from, `No hay huecos libres ese día 😕\nPrueba con otro día.`);
-    }
-
-    // normalizamos labels por si vinieran raros
-    const normalized = slots.map((x, i) => ({
-      startISO: x?.startISO,
-      endISO: x?.endISO,
-      label: x?.label || `Opción ${i + 1}`,
-    }));
-
-    s.data.slots = normalized;
-    s.step = "ASK_SLOT";
-
-    let msg = `Perfecto. Huecos disponibles:\n`;
-    normalized.forEach((x, i) => {
-      msg += `${i + 1}️⃣ ${x.label}\n`;
-    });
-    msg += `\nResponde 1, 2 o 3 (o escribe *otro día*).`;
-
-    return sendText(from, msg);
-  }
-
-  // 3️⃣ Elegir hueco
-  if (s.step === "ASK_SLOT") {
+  // Paso 2: elegir uno de los 3 días, o pedir otro
+  if (s.step === "ASK_DAY_CHOICE") {
     if (t.includes("otro")) {
-      s.step = "ASK_DAY";
-      return sendText(from, `Vale 🙂 dime otro día (ej: miércoles / 15-03 / mañana).`);
-    }
-
-    const slots = Array.isArray(s.data?.slots) ? s.data.slots : [];
-    if (slots.length === 0) {
-      s.step = "ASK_DAY";
-      return sendText(from, `Se perdió la lista de huecos 😅 Dime otra vez el día (ej: jueves).`);
+      s.step = "ASK_DAY_TEXT";
+      return sendText(from, `Vale 🙂 dime qué día te viene bien (ej: jueves / 12-03 / mañana).`);
     }
 
     const idx = Number(t) - 1;
-    if (Number.isNaN(idx) || idx < 0 || idx >= slots.length) {
-      return sendText(from, `Elige 1, 2 o 3. (o escribe *otro día*)`);
+    const days = Array.isArray(s.data?.days) ? s.data.days : [];
+
+    if (Number.isNaN(idx) || idx < 0 || idx >= days.length) {
+      return sendText(from, `Elige 1, 2 o 3. O escribe *otro* para proponer otro día.`);
     }
 
-    s.data.slot = slots[idx];
-    s.step = "ASK_NAME";
-    return sendText(from, `Genial ✅ Para reservar *${s.data.slot.label}*, dime tu nombre y apellido.`);
+    s.data.day = days[idx];
+    s.step = "ASK_TIME";
+    return sendText(from, `Perfecto ✅ ¿Prefieres *mañana* o *tarde*? (o una hora, ej: 17:30)`);
   }
 
-  // 4️⃣ Nombre
+  // Paso 2B: el usuario propone otro día manual
+  if (s.step === "ASK_DAY_TEXT") {
+    s.data.day = text;
+    s.step = "ASK_TIME";
+    return sendText(from, `Perfecto ✅ ¿Prefieres *mañana* o *tarde*? (o una hora, ej: 17:30)`);
+  }
+
+  // Paso 3: hora/franja
+  if (s.step === "ASK_TIME") {
+    s.data.time = text;
+    s.step = "ASK_NAME";
+    return sendText(from, `Último paso 🙂 ¿Cómo te llamas? (nombre y apellido)`);
+  }
+
+  // Paso 4: nombre
   if (s.step === "ASK_NAME") {
     s.data.name = text;
     s.step = "CONFIRM";
-
-    const label = s.data?.slot?.label || "(hueco sin etiqueta)";
     return sendText(
       from,
       `Confirma tu cita:\n` +
-        `🩺 ${s.data.specialty}\n` +
-        `📅 ${label}\n` +
-        `👤 ${s.data.name}\n\n` +
+        `• Especialidad: *${s.data.specialty}*\n` +
+        `• Día: *${s.data.day}*\n` +
+        `• Hora: *${s.data.time}*\n` +
+        `• Nombre: *${s.data.name}*\n\n` +
         `Responde *SI* para confirmar o *NO* para cancelar.`
     );
   }
 
-  // 5️⃣ Confirmar -> reservar (Apps Script: action=book)
+  // Paso 5: confirmar -> guardar en Sheets (y el email lo hará Apps Script)
   if (s.step === "CONFIRM") {
     if (t === "no" || t === "cancelar") {
       resetSession(from);
-      return sendText(from, `Cancelado ❌ Escribe *hola*`);
+      return sendText(from, `Entendido ✅ Cancelado. Escribe *hola* para empezar.`);
     }
 
     if (t !== "si" && t !== "sí" && t !== "ok" && !t.includes("confirm")) {
       return sendText(from, `Responde *SI* para confirmar o *NO* para cancelar.`);
     }
 
-    if (!APPS_SCRIPT_URL || !APPS_SCRIPT_URL.startsWith("https://")) {
+    if (!SHEET_WEBHOOK_URL || !SHEET_WEBHOOK_URL.startsWith("https://")) {
+      console.log("SHEET_WEBHOOK_URL mal configurada:", SHEET_WEBHOOK_URL);
       resetSession(from);
-      return sendText(from, `No está configurada la agenda 😕 (APPS_SCRIPT_URL). Escribe *hola*.`);
+      return sendText(from, `Ahora mismo no puedo guardar la cita 😕 (configuración). Escribe *hola*.`);
     }
 
-    const slotStartISO = s.data?.slot?.startISO;
-    if (!slotStartISO) {
-      s.step = "ASK_DAY";
-      return sendText(from, `No encuentro el hueco elegido 😅 Dime otra vez el día (ej: jueves).`);
-    }
-
-    let r;
     try {
-      r = await axios.post(APPS_SCRIPT_URL, {
-        action: "book",
-        phone: from,
-        name: s.data.name,
-        specialty: s.data.specialty,
-        dayText: s.data.dayText,
-        slotStartISO,
+      await axios.post(SHEET_WEBHOOK_URL, {
+        telefono: from,
+        nombre: s.data.name,
+        especialidad: s.data.specialty,
+        dia: s.data.day,
+        hora: s.data.time,
+        estado: "pendiente",
       });
     } catch (err) {
-      console.log("Error llamando book:", err?.response?.data || err.message);
+      console.log("Error guardando en Sheets:", err?.response?.data || err.message);
       resetSession(from);
-      return sendText(from, `Error reservando 😕 Intenta otra vez con *hola*.`);
+      return sendText(from, `Hubo un error guardando tu cita 😕 Intenta de nuevo con *hola*.`);
     }
 
-    console.log("RESPUESTA APPS SCRIPT (book):", JSON.stringify(r?.data));
-
-    if (!r?.data?.ok) {
-      // ejemplo: hueco ocupado o error
-      s.step = "ASK_DAY";
-      return sendText(from, `Uy 😅 ${r?.data?.error || "No pude reservar"}\nDime otro día para proponerte huecos.`);
-    }
-
-    const label = r.data.label || s.data?.slot?.label || "cita confirmada";
     resetSession(from);
     return sendText(
       from,
-      `✅ Cita confirmada\n` +
-        `📅 ${label}\n` +
-        `👤 ${s.data.name}\n\n` +
-        `¡Te esperamos!`
+      `✅ ¡Listo! Hemos recibido tu solicitud.\n\n` +
+        `📌 Resumen:\n` +
+        `• ${s.data.specialty}\n` +
+        `• ${s.data.day} — ${s.data.time}\n` +
+        `• ${s.data.name}\n\n` +
+        `📲 Recepción la confirmará en breve.\n` +
+        `Escribe *hola* para volver al menú.`
     );
   }
 
   // fallback
   resetSession(from);
-  return sendText(from, `Proceso reiniciado. Escribe *hola*`);
+  return sendText(from, `He reiniciado el proceso. Escribe *hola* para empezar.`);
+}
+
+/* ================= HELPERS ================= */
+
+// Devuelve N próximos días laborables en formato corto (es-ES)
+function nextBusinessDaysLabels(n) {
+  const out = [];
+  const d = new Date();
+  // empezamos desde mañana
+  d.setDate(d.getDate() + 1);
+
+  while (out.length < n) {
+    const day = d.getDay(); // 0 dom, 6 sáb
+    if (day !== 0 && day !== 6) {
+      out.push(formatDayLabelES(d));
+    }
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
+
+function formatDayLabelES(dateObj) {
+  const days = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
+  const dd = String(dateObj.getDate()).padStart(2, "0");
+  const mm = String(dateObj.getMonth() + 1).padStart(2, "0");
+  return `${days[dateObj.getDay()]} ${dd}/${mm}`;
 }
 
 /* ================= SEND TEXT ================= */
